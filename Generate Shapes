@@ -1,0 +1,152 @@
+// Отдельная программа: генерирует датасет бинарных фигур 64x64 ( Separate program: generates a dataset of 64x64 binary shapes )
+// Структура результата: ( Output structure: ) 
+//   <папка>/1_circle/1_circle_0000.png ... 0999 ( <folder>/1_circle/1_circle_0000.png ... 0999 )
+//   <папка>/2_square/... ( <folder>/2_square/... )
+//   <папка>/3_triangle/... ( <folder>/3_triangle/... )
+//   <папка>/4_diamond/...   ( <folder>/4_diamond/... )
+//   <папка>/5_inv_triangle/... ( <folder>/5_inv_triangle/... )
+//   <папка>/6_octagon/... ( <folder>/6_octagon/... ) 
+//
+// Запуск:  DatasetGenerator.exe [папка] [число_на_класс] [seed] ( Run:  DatasetGenerator.exe [folder] [number_per_class] [seed] )
+//   по умолчанию: D:/dataset_shapes 100 42 ( default: D:/dataset_shapes 100 42 )
+
+#include <opencv2/opencv.hpp>
+#include <opencv2/core/utils/filesystem.hpp>
+#include <iostream>
+#include <vector>
+#include <string>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <algorithm>
+
+const int SIZE = 64;
+const double PI = 3.14159265358979323846;
+
+static double rnd(double a, double b)
+{
+    return a + (b - a) * (rand() / (double)RAND_MAX);
+}
+
+// Типы: 0 круг, 1 квадрат, 2 треугольник, 3 перевёрнутый треугольник, 4 ромб, 5 октагон ( Types: 0 circle, 1 square, 2 triangle, 3 inverted triangle, 4 rhombus, 5 octagon )
+// Возвращает бинарное изображение SIZE x SIZE (0 или 255) ( Returns a SIZE x SIZE binary image (0 or 255) )
+cv::Mat generateShapeImage(int type)
+{
+    std::vector<cv::Point2d> p;      // базовая форма в координатах -1..1 ( basic form in coordinates -1..1 )
+    double rotRange = 15;            // допустимый поворот (градусы) ( Permissible rotation (degrees) )
+    double maxRatio = 2.2;           // максимальное растяжение ( maximum elongation )
+    double shearMax = 0.25;          // максимальный скос ( maximum bevel )
+    double jitter = 0.04;            // шум в вершинах ( noise at the peaks )
+    double minSize = 0.45;           // минимальный размер (доля холста) ( minimum size (portion of the canvas) )
+
+    switch (type) {
+    case 0: // круг / эллипс ( circle/ elipse )
+        for (int k = 0; k < 48; k++) {
+            double a = 2 * PI * k / 48;
+            p.push_back(cv::Point2d(cos(a), sin(a)));
+        }
+        rotRange = 180; jitter = 0; minSize = 0.5;
+        break;
+    case 1: // квадрат / прямоугольник ( square/ rectangle )
+        p.push_back(cv::Point2d(-1, -1)); p.push_back(cv::Point2d(1, -1));
+        p.push_back(cv::Point2d(1, 1));   p.push_back(cv::Point2d(-1, 1));
+        maxRatio = 1.8; shearMax = 0;
+        break;
+    case 2: { // треугольник (равнобедренный ... прямоугольный) ( triangle )
+        double ax = rnd(-1.0, 1.0);
+        p.push_back(cv::Point2d(ax, -1)); p.push_back(cv::Point2d(1, 1));
+        p.push_back(cv::Point2d(-1, 1));
+        break;
+    }
+    case 3: { // перевёрнутый треугольник ( inverted triangle ) 
+        double ax = rnd(-1.0, 1.0);
+        p.push_back(cv::Point2d(-1, -1)); p.push_back(cv::Point2d(1, -1));
+        p.push_back(cv::Point2d(ax, 1));
+        break;
+    }
+    case 4: // ромб (узкий, широкий) ( rhombus )
+        p.push_back(cv::Point2d(0, -1)); p.push_back(cv::Point2d(1, 0));
+        p.push_back(cv::Point2d(0, 1));  p.push_back(cv::Point2d(-1, 0));
+        maxRatio = 2.5;
+        break;
+    default: // 5: октагон (слегка растянутый) ( octagon )
+        for (int k = 0; k < 8; k++) {
+            double a = 2 * PI * (k + 0.5) / 8;
+            p.push_back(cv::Point2d(cos(a), sin(a)));
+        }
+        rotRange = 180; maxRatio = 1.5; shearMax = 0.08; jitter = 0.02; minSize = 0.7;
+        break;
+    }
+
+    // 1) растяжение / сужение по одной из осей ( stretching / narrowing along one of the axes )
+    double sx = 1.0, sy = 1.0;
+    double ratio = rnd(1.0, maxRatio);
+    if (rand() % 2) sx = 1.0 / ratio; else sy = 1.0 / ratio;
+
+    // 2) скос, шум вершин, поворот ( slope, the noise at the peaks, a turn )
+    double shear = (shearMax > 0) ? rnd(-shearMax, shearMax) : 0.0;
+    double ang = rnd(-rotRange, rotRange) * PI / 180.0;
+    for (size_t i = 0; i < p.size(); i++) {
+        double x = p[i].x + (jitter > 0 ? rnd(-jitter, jitter) : 0.0);
+        double y = p[i].y + (jitter > 0 ? rnd(-jitter, jitter) : 0.0);
+        x *= sx; y *= sy;
+        x += shear * y;
+        p[i] = cv::Point2d(x * cos(ang) - y * sin(ang), x * sin(ang) + y * cos(ang));
+    }
+
+    // 3) подгонка по размеру и случайный сдвиг ( size adjustment and random shift )
+    double minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+    for (size_t i = 0; i < p.size(); i++) {
+        minx = std::min(minx, p[i].x); maxx = std::max(maxx, p[i].x);
+        miny = std::min(miny, p[i].y); maxy = std::max(maxy, p[i].y);
+    }
+    double extent = std::max(maxx - minx, maxy - miny);
+    double k = rnd(minSize, 0.92) * SIZE / extent;
+    double cx0 = (minx + maxx) / 2, cy0 = (miny + maxy) / 2;
+    double halfW = (maxx - minx) * k / 2, halfH = (maxy - miny) * k / 2;
+    double offX = rnd(-(SIZE / 2.0 - halfW - 2), SIZE / 2.0 - halfW - 2);
+    double offY = rnd(-(SIZE / 2.0 - halfH - 2), SIZE / 2.0 - halfH - 2);
+
+    std::vector<cv::Point> pts;
+    for (size_t i = 0; i < p.size(); i++)
+        pts.push_back(cv::Point(cvRound(SIZE / 2.0 + offX + (p[i].x - cx0) * k),
+            cvRound(SIZE / 2.0 + offY + (p[i].y - cy0) * k)));
+
+    cv::Mat img = cv::Mat::zeros(SIZE, SIZE, CV_8UC1);
+    std::vector<std::vector<cv::Point> > polys(1, pts);
+    cv::fillPoly(img, polys, cv::Scalar(255));
+    return img;
+}
+
+int main(int argc, char** argv)
+{
+    std::string root = "D:/dataset_shapes";
+    int perClass = 1000;
+    unsigned seed = 42;
+    if (argc > 1) root = argv[1];
+    if (argc > 2) perClass = std::atoi(argv[2]);
+    if (argc > 3) seed = (unsigned)std::atoi(argv[3]);
+    srand(seed);
+
+    // порядок папок: 1 круг, 2 квадрат, 3 треугольник, 4 ромб, 5 перев. треугольник, 6 октагон ( the order of the folders: 1 circle, 2 square, 3 triangle, 4 rhombus, 5 inv. triangle, 6 octagon )
+    const char* folderNames[6] = { "1_circle", "2_square", "3_triangle",
+                                   "4_diamond", "5_inv_triangle", "6_octagon" };
+    // соответствие папок типам в generateShapeImage ( mapping folders to types in `generateShapeImage` )
+    const int shapeType[6] = { 0, 1, 2, 4, 3, 5 };
+
+    for (int c = 0; c < 6; c++) {
+        std::string dir = root + "/" + folderNames[c];
+        cv::utils::fs::createDirectories(dir);
+
+        for (int i = 0; i < perClass; i++) {
+            cv::Mat img = generateShapeImage(shapeType[c]);
+            char name[64];
+            snprintf(name, sizeof(name), "%s_%03d.png", folderNames[c], i);
+            cv::imwrite(dir + "/" + name, img);
+        }
+        std::cout << folderNames[c] << ": " << perClass << " images" << std::endl;
+    }
+
+    std::cout << "Done. Dataset saved to: " << root << std::endl;
+    return 0;
+}
